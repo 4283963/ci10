@@ -1,0 +1,39 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /audit-gateway
+
+spring:
+  application:
+    name: audit-gateway
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: UTC
+    serialization:
+      write-dates-as-timestamps: false
+
+audit:
+  brain:
+    url: http://localhost:8000
+    timeout: 60000
+    connect-timeout: 10000
+
+  sandbox:
+    enabled: true
+    timeout-seconds: 30
+    max-memory-mb: 256
+    work-dir: ./sandbox-workspace
+    network-restricted: true
+    allowed-domains:
+      - localhost
+      - 127.0.0.1
+
+  log:
+    max-size-mb: 100
+    retention-days: 7
+    dir: ./audit-logs
+
+logging:
+  level:
+    com.audit.gateway: DEBUG
+    org.springframework.web: INFO
