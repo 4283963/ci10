@@ -12,6 +12,9 @@ from app.models.audit_models import (
     AnomalyType,
     RiskLevel,
     ComponentSource,
+    CodeFixRequest,
+    CodeFixResult,
+    CodeFixDiff,
 )
 
 
@@ -401,3 +404,302 @@ async def analyze_with_llm(component: ComponentSource) -> LlmAnalysisResult:
         risk_summary="LLM分析失败，所有降级策略均未成功: " + "; ".join(warnings),
         overall_assessment="LLM 语义分析不可用，请参考静态分析结果。原因：" + "; ".join(warnings[:3]),
     )
+
+
+CODE_FIX_SYSTEM_PROMPT = """你是一位资深的代码安全修复专家，专注于修复低代码组件中的安全漏洞。
+你的职责是：
+1. 精确修复代码中的安全问题，保持原有业务逻辑不变
+2. 不改变代码的输入输出接口和正常功能
+3. 对每个修改提供清晰的修改说明
+
+修复原则：
+- eval() → JSON.parse() 或安全解析函数
+- innerHTML → textContent 或 createElement/DOM 操作
+- document.write() → 安全 DOM 方法
+- __proto__ / prototype 修改 → 使用 Object.create(null) 或 Map
+- localStorage/sessionStorage 存储敏感信息 → 移除或加密提示
+- fetch/XHR 无白名单 → 增加域名校验
+- 死循环/嵌套循环过深 → 增加循环保护或重构
+- document.cookie 直接设置 → 增加 secure/httpOnly 属性说明
+
+非常重要：
+1. 必须保留所有原有的非安全相关代码逻辑
+2. 只修改有安全问题的代码行
+3. 修复后的代码必须语法正确、可以直接运行"""
+
+
+CODE_FIX_PROMPT_TEMPLATE = """请修复以下低代码组件中的安全问题。
+
+组件信息：
+- 组件ID: {component_id}
+- 组件名称: {component_name}
+- 代码语言: {language}
+
+已识别的安全问题：
+{findings_summary}
+
+需要修复的范围: {fix_scope}
+（说明: all=全部问题, critical_high=只修严重和高危, medium_and_above=修中危及以上）
+
+原始代码：
+```
+{code}
+```
+
+请严格按以下 JSON 格式输出修复结果，不要包含其他文字：
+{{
+  "fixed_code": "完整的修复后代码，必须包含所有原始逻辑",
+  "fix_summary": "简要说明修复了哪些问题，修复思路是什么",
+  "estimated_score_improvement": 预估安全评分能提升多少分（0到100之间的数字）,
+  "changes": [
+    {{
+      "line_number": 行号（原始代码中的行号，整数）,
+      "original_code": "原始代码内容",
+      "fixed_code": "修复后的代码内容",
+      "change_type": "replace|insert|delete",
+      "reason": "为什么要做这个修改"
+    }}
+  ],
+  "fixed_findings": ["已修复的问题ID1", "已修复的问题ID2"],
+  "warning": "是否需要人工确认的注意事项，可为空字符串"
+}}"""
+
+
+FINDING_LABELS = {
+    "critical": "【严重】",
+    "high": "【高危】",
+    "medium": "【中危】",
+    "low": "【低危】",
+    "info": "【信息】",
+}
+
+
+def _format_findings_for_prompt(findings: List[AnomalyFinding]) -> str:
+    if not findings:
+        return "（无已识别的具体问题，基于通用安全规范进行全面优化）"
+
+    lines = []
+    for i, f in enumerate(findings, 1):
+        level_label = FINDING_LABELS.get(f.risk_level.value, "")
+        line_info = f"第{f.line_number}行" if f.line_number else "位置未知"
+        lines.append(
+            f"{i}. {level_label} {f.description} ({line_info})\n"
+            f"   类型: {f.anomaly_type.value}\n"
+            f"   建议: {f.remediation or '请根据通用规范修复'}"
+        )
+    return "\n".join(lines)
+
+
+def _parse_fix_result(raw: dict, original_code: str, findings: List[AnomalyFinding]) -> CodeFixResult:
+    changes_data = raw.get("changes", [])
+    changes: List[CodeFixDiff] = []
+
+    for c in changes_data:
+        try:
+            changes.append(CodeFixDiff(
+                line_number=int(c.get("line_number", 0)),
+                original_code=str(c.get("original_code", "")),
+                fixed_code=str(c.get("fixed_code", "")),
+                change_type=str(c.get("change_type", "replace")),
+                reason=str(c.get("reason", "")),
+            ))
+        except Exception:
+            continue
+
+    fixed_code = str(raw.get("fixed_code", original_code)).strip()
+    if not fixed_code:
+        fixed_code = original_code
+
+    fixed_ids = raw.get("fixed_findings", [])
+    if isinstance(fixed_ids, list):
+        fixed_id_list = [str(x) for x in fixed_ids]
+    else:
+        fixed_id_list = [f.finding_id for f in findings]
+
+    estimated = float(raw.get("estimated_score_improvement", 0.0))
+    if estimated < 0:
+        estimated = 0.0
+    if estimated > 100:
+        estimated = 100.0
+
+    return CodeFixResult(
+        original_code=original_code,
+        fixed_code=fixed_code,
+        changes=changes,
+        fix_summary=str(raw.get("fix_summary", "已按通用安全规范进行修复")),
+        fixed_findings=fixed_id_list,
+        warning=str(raw.get("warning", "")) or None,
+        estimated_score_improvement=round(estimated, 1),
+    )
+
+
+def _apply_local_fixes(code: str) -> Tuple[str, List[CodeFixDiff], str, float]:
+    """
+    本地规则修复（无需 LLM，作为降级方案）
+    """
+    import re as _re
+
+    changes: List[CodeFixDiff] = []
+    lines = code.split("\n")
+    fixed_lines = list(lines)
+    score_improve = 0.0
+    summary_parts = []
+
+    for i, line in enumerate(lines):
+        line_num = i + 1
+        original = line
+        new_line = line
+
+        if "eval(" in line and not line.strip().startswith("//"):
+            new_line = new_line.replace("eval(", "JSON.parse(")
+            score_improve += 15
+            summary_parts.append(f"第{line_num}行: eval() → JSON.parse()")
+
+        if ".innerHTML =" in line and not line.strip().startswith("//"):
+            new_line = new_line.replace(".innerHTML =", ".textContent =")
+            score_improve += 12
+            summary_parts.append(f"第{line_num}行: innerHTML → textContent")
+
+        if "document.write(" in line and not line.strip().startswith("//"):
+            indent = len(line) - len(line.lstrip())
+            new_line = (
+                " " * indent
+                + "// [已移除] document.write() 存在XSS风险，请使用 DOM API 替代"
+            )
+            score_improve += 10
+            summary_parts.append(f"第{line_num}行: 注释掉 document.write()")
+
+        if "__proto__" in line and not line.strip().startswith("//"):
+            new_line = "// " + new_line + "  // [已注释] __proto__修改存在原型污染风险"
+            score_improve += 10
+            summary_parts.append(f"第{line_num}行: 注释掉 __proto__ 修改")
+
+        if "localStorage.setItem(" in line and "token" in line.lower():
+            new_line = new_line.replace(
+                "localStorage.setItem(",
+                "// [建议加密] localStorage.setItem("
+            )
+            score_improve += 5
+            summary_parts.append(f"第{line_num}行: 标记敏感信息存储需加密")
+
+        if new_line != original:
+            fixed_lines[i] = new_line
+            changes.append(CodeFixDiff(
+                line_number=line_num,
+                original_code=original,
+                fixed_code=new_line,
+                change_type="replace",
+                reason=summary_parts[-1] if summary_parts else "安全修复",
+            ))
+
+    fixed_code = "\n".join(fixed_lines)
+    summary = "本地规则快速修复: " + "；".join(summary_parts) if summary_parts else "未识别到可自动修复的通用安全问题"
+
+    return fixed_code, changes, summary, min(score_improve, 60.0)
+
+
+async def fix_code_with_llm(request: CodeFixRequest) -> CodeFixResult:
+    """
+    代码修复入口，带两级降级：
+    Level 1: LLM 智能修复（结合已知问题）
+    Level 2: 本地规则快速修复（LLM 不可用时的保底方案）
+    """
+    original_code = request.code
+    findings = request.findings or []
+
+    if request.fix_scope != "all":
+        scope = request.fix_scope
+        filtered = []
+        for f in findings:
+            if scope == "critical_high" and f.risk_level.value in ("critical", "high"):
+                filtered.append(f)
+            elif scope == "medium_and_above" and f.risk_level.value in ("critical", "high", "medium"):
+                filtered.append(f)
+            elif scope == "all":
+                filtered.append(f)
+        findings = filtered
+
+    if not settings.LLM_ANALYSIS_ENABLED or not settings.LLM_API_KEY:
+        fixed_code, changes, summary, score_improve = _apply_local_fixes(original_code)
+        return CodeFixResult(
+            original_code=original_code,
+            fixed_code=fixed_code,
+            changes=changes,
+            fix_summary=summary + "（LLM未启用，已使用本地规则）",
+            fixed_findings=[f.finding_id for f in findings],
+            warning="LLM服务未配置，仅执行了本地规则修复。建议启用LLM以获得更精准的修复结果。",
+            estimated_score_improvement=score_improve,
+        )
+
+    findings_summary = _format_findings_for_prompt(findings)
+    scope_label = {
+        "all": "全部安全问题",
+        "critical_high": "仅严重和高危",
+        "medium_and_above": "中危及以上",
+    }.get(request.fix_scope or "all", "全部安全问题")
+
+    code_tokens = _estimate_tokens(original_code)
+    available_tokens = settings.LLM_MAX_INPUT_TOKENS - _estimate_tokens(CODE_FIX_SYSTEM_PROMPT) - settings.LLM_MAX_TOKENS - 1000
+
+    work_code = original_code
+    truncation_warning = ""
+    if code_tokens > available_tokens and available_tokens > 0:
+        work_code, was_truncated = _truncate_code_smart(original_code, int(available_tokens * 0.9))
+        if was_truncated:
+            truncation_warning = "代码过长，已截取核心部分进行修复，完整修复请人工确认。"
+
+    prompt = CODE_FIX_PROMPT_TEMPLATE.format(
+        component_id=request.component_id,
+        component_name=request.component_name,
+        language=request.language,
+        findings_summary=findings_summary,
+        fix_scope=scope_label,
+        code=work_code,
+    )
+
+    try:
+        output_tokens = min(settings.LLM_MAX_TOKENS * 2, 4096)
+        response_text = await call_llm_api(prompt, max_tokens=output_tokens)
+        raw = _parse_llm_response(response_text)
+
+        result = _parse_fix_result(raw, original_code, findings)
+        if truncation_warning:
+            if result.warning:
+                result.warning = truncation_warning + " " + result.warning
+            else:
+                result.warning = truncation_warning
+
+        if not result.changes and result.fixed_code == original_code:
+            fixed_code, changes, summary, score_improve = _apply_local_fixes(original_code)
+            if fixed_code != original_code:
+                result.fixed_code = fixed_code
+                result.changes = changes
+                result.fix_summary = summary
+                result.estimated_score_improvement = max(result.estimated_score_improvement, score_improve)
+
+        return result
+
+    except TokenLimitExceededError:
+        fixed_code, changes, summary, score_improve = _apply_local_fixes(original_code)
+        return CodeFixResult(
+            original_code=original_code,
+            fixed_code=fixed_code,
+            changes=changes,
+            fix_summary="（Token超限降级）" + summary,
+            fixed_findings=[f.finding_id for f in findings],
+            warning="输入代码过长导致LLM调用失败，已使用本地规则进行基础修复。建议拆分代码后重试。",
+            estimated_score_improvement=score_improve,
+        )
+
+    except Exception as e:
+        fixed_code, changes, summary, score_improve = _apply_local_fixes(original_code)
+        warning = f"LLM修复失败: {str(e)[:80]}，已使用本地规则修复"
+        return CodeFixResult(
+            original_code=original_code,
+            fixed_code=fixed_code,
+            changes=changes,
+            fix_summary="（LLM降级）" + summary,
+            fixed_findings=[f.finding_id for f in findings],
+            warning=warning,
+            estimated_score_improvement=score_improve,
+        )

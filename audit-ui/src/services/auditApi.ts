@@ -6,6 +6,8 @@ import type {
   SandboxExecutionResult,
   ExtractedLogData,
   FullAuditResult,
+  CodeFixRequest,
+  CodeFixResult,
 } from '../types'
 
 const api = axios.create({
@@ -59,6 +61,13 @@ export const auditApi = {
   sandboxExecute: (component: ComponentSource, cancelToken?: CancelTokenSource) => {
     return api.post<AuditResponse<SandboxExecutionResult>>('/sandbox/execute', component, {
       cancelToken: cancelToken?.token,
+    })
+  },
+
+  fixCode: (request: CodeFixRequest, cancelToken?: CancelTokenSource) => {
+    return api.post<AuditResponse<CodeFixResult>>('/audit/fix', request, {
+      cancelToken: cancelToken?.token,
+      timeout: 180000,
     })
   },
 

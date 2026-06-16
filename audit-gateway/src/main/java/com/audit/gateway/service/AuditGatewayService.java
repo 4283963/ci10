@@ -111,6 +111,17 @@ public class AuditGatewayService {
         }
     }
 
+    public AuditResponse<CodeFixResult> fixCode(CodeFixRequest request) {
+        try {
+            log.info("开始代码修复: {}, 修复范围: {}", request.getComponentId(), request.getFixScope());
+            CodeFixResult result = auditBrainService.fixCode(request);
+            return AuditResponse.success("代码修复完成", result);
+        } catch (Exception e) {
+            log.error("代码修复服务异常: {}", e.getMessage(), e);
+            return AuditResponse.error("代码修复失败: " + e.getMessage());
+        }
+    }
+
     @lombok.Data
     @lombok.Builder
     @lombok.NoArgsConstructor

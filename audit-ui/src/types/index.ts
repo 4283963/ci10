@@ -122,3 +122,38 @@ export const ANOMALY_TYPE_LABELS: Record<AnomalyType, string> = {
   prototype_pollution: '原型污染',
   unknown: '未知类型',
 }
+
+export type FixScope = 'all' | 'critical_high' | 'medium_and_above'
+
+export interface CodeFixDiff {
+  lineNumber: number
+  originalCode: string
+  fixedCode: string
+  changeType: 'replace' | 'insert' | 'delete'
+  reason: string
+}
+
+export interface CodeFixResult {
+  originalCode: string
+  fixedCode: string
+  changes: CodeFixDiff[]
+  fixSummary: string
+  fixedFindings: string[]
+  warning?: string
+  estimatedScoreImprovement: number
+}
+
+export interface CodeFixRequest {
+  componentId: string
+  componentName: string
+  code: string
+  language?: string
+  findings?: AnomalyFinding[]
+  fixScope?: FixScope
+}
+
+export const FIX_SCOPE_LABELS: Record<FixScope, string> = {
+  all: '全部安全问题',
+  critical_high: '仅严重和高危',
+  medium_and_above: '中危及以上',
+}

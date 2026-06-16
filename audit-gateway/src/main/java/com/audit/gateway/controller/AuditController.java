@@ -53,6 +53,14 @@ public class AuditController {
         return ResponseEntity.ok(response);
     }
 
+    @PostMapping("/audit/fix")
+    public ResponseEntity<AuditResponse<CodeFixResult>> fixCode(
+            @RequestBody CodeFixRequest request) {
+        log.info("收到代码修复请求: {}, 范围: {}", request.getComponentId(), request.getFixScope());
+        AuditResponse<CodeFixResult> response = auditGatewayService.fixCode(request);
+        return ResponseEntity.ok(response);
+    }
+
     @PostMapping("/sandbox/execute")
     public ResponseEntity<AuditResponse<SandboxService.SandboxExecutionResult>> sandboxExecute(
             @Valid @RequestBody ComponentSource component) {

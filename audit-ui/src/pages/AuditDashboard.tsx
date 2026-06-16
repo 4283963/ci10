@@ -4,8 +4,10 @@ import CodeViewer from '../components/CodeViewer'
 import FindingsList from '../components/FindingsList'
 import RiskDistributionChart from '../components/RiskDistributionChart'
 import StatsCard from '../components/StatsCard'
+import CodeFixPanel from '../components/CodeFixPanel'
 import { useAudit } from '../hooks/useAudit'
-import type { ComponentSource, FullAuditResult } from '../types'
+import useCodeFix, { type CodeFixProgress } from '../hooks/useCodeFix'
+import type { ComponentSource, FullAuditResult, FixScope } from '../types'
 import { RISK_LEVEL_COLORS } from '../types'
 
 const SAMPLE_CODE = `// 低代码组件示例
@@ -101,6 +103,16 @@ const AuditDashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'code' | 'findings' | 'overview'>('overview')
 
   const { isAuditing, progress, error, fullAudit, cancelAudit, reset } = useAudit()
+  const {
+    loading: fixLoading,
+    progress: fixProgress,
+    fixResult,
+    error: fixError,
+    startFix,
+    cancelFix,
+    applyFix,
+    reset: resetFix,
+  } = useCodeFix()
 
   const handleAudit = useCallback(async () => {
     const component: ComponentSource = {
@@ -129,6 +141,29 @@ const AuditDashboard: React.FC = () => {
     setCode(NESTED_LOOP_TEST_CODE)
     handleReset()
   }, [handleReset])
+
+  const handleStartFix = useCallback(
+    async (scope: FixScope) => {
+      if (!report) return
+      await startFix({
+        componentId,
+        componentName,
+        code,
+        language: 'javascript',
+        findings: report.allFindings,
+        fixScope: scope,
+      })
+    },
+    [report, componentId, componentName, code, startFix]
+  )
+
+  const handleApplyFix = useCallback(() => {
+    applyFix((fixedCode: string) => {
+      setCode(fixedCode)
+      handleReset()
+      setAuditResult(null)
+    })
+  }, [applyFix, handleReset])
 
   const report = auditResult?.auditReport
 
@@ -532,6 +567,19 @@ const AuditDashboard: React.FC = () => {
                     </div>
                   </div>
                 </div>
+
+                {/* AI 自动修复面板 */}
+                <CodeFixPanel
+                  loading={fixLoading}
+                  progress={fixProgress}
+                  fixResult={fixResult}
+                  error={fixError}
+                  currentScore={report.overallScore}
+                  onStartFix={handleStartFix}
+                  onCancelFix={cancelFix}
+                  onApplyFix={handleApplyFix}
+                  onReset={resetFix}
+                />
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
                   {/* 风险分布 */}

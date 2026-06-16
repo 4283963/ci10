@@ -71,7 +71,42 @@ class AuditReport(BaseModel):
     recommendations: List[str] = []
 
 
+class CodeFixRequest(BaseModel):
+    component_id: str = Field(..., description="组件唯一标识")
+    component_name: str = Field(..., description="组件名称")
+    code: str = Field(..., description="待修复的组件源代码")
+    language: str = Field(default="javascript", description="代码语言")
+    findings: List[AnomalyFinding] = Field(default_factory=list, description="已识别的安全问题")
+    fix_scope: Optional[str] = Field(default="all", description="修复范围: all/critical_high/medium_and_above")
+
+
+class CodeFixDiff(BaseModel):
+    line_number: int = Field(..., description="修改的行号")
+    original_code: str = Field(..., description="原始代码行")
+    fixed_code: str = Field(..., description="修复后代码行")
+    change_type: str = Field(..., description="修改类型: replace/insert/delete")
+    reason: str = Field(..., description="修改原因")
+
+
+class CodeFixResult(BaseModel):
+    original_code: str = Field(..., description="原始完整代码")
+    fixed_code: str = Field(..., description="修复后的完整代码")
+    changes: List[CodeFixDiff] = Field(default_factory=list, description="逐行修改明细")
+    fix_summary: str = Field(..., description="修复摘要")
+    fixed_findings: List[str] = Field(default_factory=list, description="已修复的问题ID列表")
+    warning: Optional[str] = Field(None, description="修复时的注意事项")
+    estimated_score_improvement: float = Field(
+        default=0.0, description="预估安全评分提升幅度"
+    )
+
+
 class AuditResponse(BaseModel):
     success: bool
     message: str
     data: Optional[AuditReport] = None
+
+
+class CodeFixResponse(BaseModel):
+    success: bool
+    message: str
+    data: Optional[CodeFixResult] = None

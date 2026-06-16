@@ -3,12 +3,14 @@ from fastapi import Request
 from typing import List
 import asyncio
 
-from app.models.audit_models import ComponentSource, AuditResponse
+from app.models.audit_models import ComponentSource, AuditResponse, CodeFixRequest, CodeFixResponse
 from app.services.audit_service import perform_audit
+from app.services.llm_service import fix_code_with_llm
 
 router = APIRouter(prefix="/api/v1", tags=["audit"])
 
 AUDIT_TIMEOUT = 90
+FIX_TIMEOUT = 120
 
 
 @router.get("/health")
@@ -109,3 +111,57 @@ async def llm_audit(component: ComponentSource):
                 "overall_assessment": "LLM分析不可用，请参考静态分析结果"
             }
         }
+
+
+@router.post("/audit/fix", response_model=CodeFixResponse)
+async def fix_audit_code(request: CodeFixRequest):
+    if not request.code or not request.code.strip():
+        raise HTTPException(status_code=400, detail="组件代码不能为空")
+
+    if len(request.code) > 500000:
+        raise HTTPException(status_code=413, detail="代码长度超过限制")
+
+    try:
+        result = await asyncio.wait_for(
+            fix_code_with_llm(request),
+            timeout=FIX_TIMEOUT
+        )
+        return CodeFixResponse(
+            success=True,
+            message="代码修复完成",
+            data=result,
+        )
+    except asyncio.TimeoutError:
+        from app.services.llm_service import _apply_local_fixes
+
+        fixed_code, changes, summary, score_improve = _apply_local_fixes(request.code)
+        return CodeFixResponse(
+            success=True,
+            message="修复超时，已使用本地规则进行基础修复",
+            data={
+                "original_code": request.code,
+                "fixed_code": fixed_code,
+                "changes": changes,
+                "fix_summary": summary,
+                "fixed_findings": [f.finding_id for f in request.findings],
+                "warning": "LLM修复超时，仅使用本地规则修复，建议人工确认",
+                "estimated_score_improvement": score_improve,
+            },
+        )
+    except Exception as e:
+        from app.services.llm_service import _apply_local_fixes
+
+        fixed_code, changes, summary, score_improve = _apply_local_fixes(request.code)
+        return CodeFixResponse(
+            success=True,
+            message=f"修复服务异常: {str(e)[:60]}，已使用本地规则降级修复",
+            data={
+                "original_code": request.code,
+                "fixed_code": fixed_code,
+                "changes": changes,
+                "fix_summary": summary,
+                "fixed_findings": [f.finding_id for f in request.findings],
+                "warning": "修复服务降级，仅本地规则生效，建议人工确认",
+                "estimated_score_improvement": score_improve,
+            },
+        )

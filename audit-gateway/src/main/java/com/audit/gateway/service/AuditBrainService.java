@@ -250,6 +250,124 @@ public class AuditBrainService {
         }
     }
 
+    public CodeFixResult fixCode(CodeFixRequest request) {
+        if (isCircuitBreakerOpen()) {
+            log.warn("熔断器打开，代码修复走本地降级路径");
+            return buildLocalFallbackFix(request);
+        }
+
+        String url = buildUrl("/api/v1/audit/fix");
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+
+            HttpEntity<CodeFixRequest> entity = new HttpEntity<>(request, headers);
+            ResponseEntity<Map> response = restTemplate.postForEntity(url, entity, Map.class);
+
+            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                Map<String, Object> body = response.getBody();
+                Boolean success = (Boolean) body.get("success");
+                if (Boolean.TRUE.equals(success)) {
+                    recordSuccess();
+                    Map<String, Object> data = (Map<String, Object>) body.get("data");
+                    return convertToCodeFixResult(data);
+                } else {
+                    String message = (String) body.get("message");
+                    log.warn("代码修复服务返回失败: {}", message);
+                    recordFailure();
+                    return buildLocalFallbackFix(request);
+                }
+            }
+            recordFailure();
+            return buildLocalFallbackFix(request);
+        } catch (Exception e) {
+            log.error("调用代码修复服务失败: {}", e.getMessage(), e);
+            recordFailure();
+            return buildLocalFallbackFix(request);
+        }
+    }
+
+    private CodeFixResult buildLocalFallbackFix(CodeFixRequest request) {
+        log.info("代码修复走本地降级路径: {}", request.getComponentId());
+        String originalCode = request.getCode() != null ? request.getCode() : "";
+        List<CodeFixDiff> changes = new ArrayList<>();
+        List<String> lines = originalCode.lines().toList();
+        List<String> fixedLines = new ArrayList<>();
+        List<String> summaryParts = new ArrayList<>();
+        double scoreImprove = 0.0;
+
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
+            int lineNum = i + 1;
+            String newLine = line;
+
+            if (line.contains("eval(") && !line.trim().startsWith("//")) {
+                newLine = newLine.replace("eval(", "JSON.parse(");
+                scoreImprove += 15;
+                summaryParts.add("第" + lineNum + "行: eval() → JSON.parse()");
+            }
+            if (line.contains(".innerHTML =") && !line.trim().startsWith("//")) {
+                newLine = newLine.replace(".innerHTML =", ".textContent =");
+                scoreImprove += 12;
+                summaryParts.add("第" + lineNum + "行: innerHTML → textContent");
+            }
+            if (line.contains("document.write(") && !line.trim().startsWith("//")) {
+                String indent = line.substring(0, line.length() - line.stripLeading().length());
+                newLine = indent + "// [已移除] document.write() 存在XSS风险，请使用DOM API";
+                scoreImprove += 10;
+                summaryParts.add("第" + lineNum + "行: 注释掉 document.write()");
+            }
+            if (line.contains("__proto__") && !line.trim().startsWith("//")) {
+                newLine = "// " + newLine + "  // [已注释] __proto__存在原型污染风险";
+                scoreImprove += 10;
+                summaryParts.add("第" + lineNum + "行: 注释掉 __proto__ 修改");
+            }
+
+            if (!newLine.equals(line)) {
+                changes.add(CodeFixDiff.builder()
+                        .lineNumber(lineNum)
+                        .originalCode(line)
+                        .fixedCode(newLine)
+                        .changeType("replace")
+                        .reason(summaryParts.isEmpty() ? "安全修复" : summaryParts.get(summaryParts.size() - 1))
+                        .build());
+            }
+            fixedLines.add(newLine);
+        }
+
+        String fixedCode = String.join("\n", fixedLines);
+        String summary = summaryParts.isEmpty()
+                ? "本地规则未识别到可自动修复的通用安全问题，请人工处理"
+                : "本地规则快速修复: " + String.join("；", summaryParts);
+        return CodeFixResult.builder()
+                .originalCode(originalCode)
+                .fixedCode(fixedCode)
+                .changes(changes)
+                .fixSummary(summary + "（已走本地降级路径）")
+                .fixedFindings(request.getFindings() != null
+                        ? request.getFindings().stream().map(AnomalyFinding::getFindingId).toList()
+                        : Collections.emptyList())
+                .warning("远程修复服务不可用，已使用本地规则修复，建议人工确认修复结果")
+                .estimatedScoreImprovement(Math.min(scoreImprove, 60.0))
+                .build();
+    }
+
+    private CodeFixResult convertToCodeFixResult(Map<String, Object> data) {
+        try {
+            String json = objectMapper.writeValueAsString(data);
+            return objectMapper.readValue(json, CodeFixResult.class);
+        } catch (Exception e) {
+            log.warn("转换代码修复结果失败: {}", e.getMessage());
+            return CodeFixResult.builder()
+                    .originalCode((String) data.get("originalCode"))
+                    .fixedCode((String) data.get("fixedCode"))
+                    .changes(Collections.emptyList())
+                    .fixSummary((String) data.get("fixSummary"))
+                    .estimatedScoreImprovement(0.0)
+                    .build();
+        }
+    }
+
     public boolean healthCheck() {
         String url = buildUrl("/api/v1/health");
         try {
