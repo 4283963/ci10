@@ -1,4 +1,4 @@
-import axios from 'axios'
+import axios, { CancelTokenSource } from 'axios'
 import type {
   ComponentSource,
   AuditReport,
@@ -19,30 +19,47 @@ const api = axios.create({
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    console.error('API Error:', error)
+    if (axios.isCancel(error)) {
+      console.log('Request canceled:', error.message)
+    } else {
+      console.error('API Error:', error?.message || error)
+    }
     return Promise.reject(error)
   }
 )
 
+export function createCancelToken(): CancelTokenSource {
+  return axios.CancelToken.source()
+}
+
 export const auditApi = {
   healthCheck: () => {
-    return api.get<AuditResponse<Record<string, unknown>>>('/health')
+    return api.get<AuditResponse<Record<string, unknown>>>('/health', { timeout: 5000 })
   },
 
-  auditComponent: (component: ComponentSource) => {
-    return api.post<AuditResponse<AuditReport>>('/audit', component)
+  auditComponent: (component: ComponentSource, cancelToken?: CancelTokenSource) => {
+    return api.post<AuditResponse<AuditReport>>('/audit', component, {
+      cancelToken: cancelToken?.token,
+    })
   },
 
-  fullAudit: (component: ComponentSource) => {
-    return api.post<AuditResponse<FullAuditResult>>('/audit/full', component)
+  fullAudit: (component: ComponentSource, cancelToken?: CancelTokenSource) => {
+    return api.post<AuditResponse<FullAuditResult>>('/audit/full', component, {
+      cancelToken: cancelToken?.token,
+      timeout: 120000,
+    })
   },
 
-  batchAudit: (components: ComponentSource[]) => {
-    return api.post<AuditResponse<AuditReport[]>>('/audit/batch', components)
+  batchAudit: (components: ComponentSource[], cancelToken?: CancelTokenSource) => {
+    return api.post<AuditResponse<AuditReport[]>>('/audit/batch', components, {
+      cancelToken: cancelToken?.token,
+    })
   },
 
-  sandboxExecute: (component: ComponentSource) => {
-    return api.post<AuditResponse<SandboxExecutionResult>>('/sandbox/execute', component)
+  sandboxExecute: (component: ComponentSource, cancelToken?: CancelTokenSource) => {
+    return api.post<AuditResponse<SandboxExecutionResult>>('/sandbox/execute', component, {
+      cancelToken: cancelToken?.token,
+    })
   },
 
   analyzeLogs: (logs: string[]) => {
@@ -50,7 +67,7 @@ export const auditApi = {
   },
 
   getSystemStatus: () => {
-    return api.get<AuditResponse<Record<string, unknown>>>('/status')
+    return api.get<AuditResponse<Record<string, unknown>>>('/status', { timeout: 5000 })
   },
 }
 

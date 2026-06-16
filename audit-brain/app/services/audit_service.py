@@ -80,9 +80,16 @@ async def perform_audit(component: ComponentSource) -> AuditResponse:
         )
 
 
-def batch_audit(components: List[ComponentSource]) -> List[AuditResponse]:
+async def batch_audit(components: List[ComponentSource]) -> List[AuditResponse]:
     results = []
     for component in components:
-        result = perform_audit(component)
+        try:
+            result = await perform_audit(component)
+        except Exception as e:
+            result = AuditResponse(
+                success=False,
+                message=f"审计异常: {str(e)}",
+                data=None
+            )
         results.append(result)
     return results

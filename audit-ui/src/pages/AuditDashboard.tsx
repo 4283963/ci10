@@ -1,11 +1,11 @@
-import React, { useState } from 'react'
+import React, { useState, useCallback } from 'react'
 import ScoreGauge from '../components/ScoreGauge'
 import CodeViewer from '../components/CodeViewer'
 import FindingsList from '../components/FindingsList'
 import RiskDistributionChart from '../components/RiskDistributionChart'
 import StatsCard from '../components/StatsCard'
 import { useAudit } from '../hooks/useAudit'
-import type { ComponentSource, AuditReport, FullAuditResult } from '../types'
+import type { ComponentSource, FullAuditResult } from '../types'
 import { RISK_LEVEL_COLORS } from '../types'
 
 const SAMPLE_CODE = `// 低代码组件示例
@@ -35,6 +35,64 @@ function UserProfileComponent(props) {
   return result;
 }`
 
+const NESTED_LOOP_TEST_CODE = `// 测试用：20层嵌套循环
+function maliciousComponent() {
+  let count = 0;
+  for (let i1 = 0; i1 < 10; i1++) {
+    for (let i2 = 0; i2 < 10; i2++) {
+      for (let i3 = 0; i3 < 10; i3++) {
+        for (let i4 = 0; i4 < 10; i4++) {
+          for (let i5 = 0; i5 < 10; i5++) {
+            for (let i6 = 0; i6 < 10; i6++) {
+              for (let i7 = 0; i7 < 10; i7++) {
+                for (let i8 = 0; i8 < 10; i8++) {
+                  for (let i9 = 0; i9 < 10; i9++) {
+                    for (let i10 = 0; i10 < 10; i10++) {
+                      for (let i11 = 0; i11 < 10; i11++) {
+                        for (let i12 = 0; i12 < 10; i12++) {
+                          for (let i13 = 0; i13 < 10; i13++) {
+                            for (let i14 = 0; i14 < 10; i14++) {
+                              for (let i15 = 0; i15 < 10; i15++) {
+                                for (let i16 = 0; i16 < 10; i16++) {
+                                  for (let i17 = 0; i17 < 10; i17++) {
+                                    for (let i18 = 0; i18 < 10; i18++) {
+                                      for (let i19 = 0; i19 < 10; i19++) {
+                                        for (let i20 = 0; i20 < 10; i20++) {
+                                          count++;
+                                          eval("count = " + count);
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return count;
+}`
+
+const formatDuration = (ms: number): string => {
+  const seconds = Math.floor(ms / 1000)
+  const minutes = Math.floor(seconds / 60)
+  const secs = seconds % 60
+  if (minutes > 0) {
+    return `${minutes}分${secs}秒`
+  }
+  return `${secs}秒`
+}
+
 const AuditDashboard: React.FC = () => {
   const [componentId, setComponentId] = useState('comp-001')
   const [componentName, setComponentName] = useState('用户资料组件')
@@ -42,9 +100,9 @@ const AuditDashboard: React.FC = () => {
   const [auditResult, setAuditResult] = useState<FullAuditResult | null>(null)
   const [activeTab, setActiveTab] = useState<'code' | 'findings' | 'overview'>('overview')
 
-  const { loading, error, fullAudit } = useAudit()
+  const { isAuditing, progress, error, fullAudit, cancelAudit, reset } = useAudit()
 
-  const handleAudit = async () => {
+  const handleAudit = useCallback(async () => {
     const component: ComponentSource = {
       componentId,
       componentName,
@@ -53,13 +111,28 @@ const AuditDashboard: React.FC = () => {
       componentType: 'lowcode',
     }
 
+    setAuditResult(null)
     const result = await fullAudit(component)
     if (result) {
       setAuditResult(result)
     }
-  }
+  }, [componentId, componentName, code, fullAudit])
+
+  const handleReset = useCallback(() => {
+    reset()
+    setAuditResult(null)
+  }, [reset])
+
+  const loadTestCode = useCallback(() => {
+    setComponentId('comp-malicious-001')
+    setComponentName('恶意嵌套循环测试组件')
+    setCode(NESTED_LOOP_TEST_CODE)
+    handleReset()
+  }, [handleReset])
 
   const report = auditResult?.auditReport
+
+  const isErrorState = progress.stage === 'error' || progress.stage === 'timeout' || progress.stage === 'cancelled'
 
   return (
     <div className="audit-dashboard" style={{ minHeight: '100vh', backgroundColor: '#f9fafb' }}>
@@ -73,6 +146,9 @@ const AuditDashboard: React.FC = () => {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
+          position: 'sticky',
+          top: 0,
+          zIndex: 100,
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -93,13 +169,126 @@ const AuditDashboard: React.FC = () => {
           </div>
           <div>
             <div style={{ fontWeight: 600, fontSize: 16 }}>低代码组件安全审计工作台</div>
-            <div style={{ fontSize: 12, color: '#6b7280' }}>AI 智能审计系统</div>
+            <div style={{ fontSize: 12, color: '#6b7280' }}>AI 智能审计系统 v2.0（异常边界防护版）</div>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 16, fontSize: 13, color: '#6b7280' }}>
+        <div style={{ display: 'flex', gap: 16, fontSize: 13, color: '#6b7280', alignItems: 'center' }}>
           <span>系统状态: <span style={{ color: '#16a34a' }}>● 正常</span></span>
+          <button
+            onClick={loadTestCode}
+            style={{
+              padding: '6px 12px',
+              fontSize: 12,
+              border: '1px solid #e5e7eb',
+              borderRadius: 6,
+              backgroundColor: 'white',
+              color: '#6b7280',
+              cursor: 'pointer',
+            }}
+          >
+            🧪 加载嵌套循环测试用例
+          </button>
         </div>
       </header>
+
+      {/* 进度条 */}
+      {isAuditing && (
+        <div
+          style={{
+            position: 'sticky',
+            top: 60,
+            zIndex: 99,
+            backgroundColor: 'white',
+            borderBottom: '1px solid #e5e7eb',
+            padding: '12px 24px',
+            boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16, maxWidth: 1400, margin: '0 auto' }}>
+            <div style={{ flex: 1 }}>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  fontSize: 13,
+                  marginBottom: 6,
+                }}
+              >
+                <span style={{ color: '#374151', fontWeight: 500 }}>
+                  {progress.message}
+                </span>
+                <span style={{ color: '#6b7280' }}>
+                  用时: {formatDuration(progress.elapsedMs)}
+                </span>
+              </div>
+              <div
+                style={{
+                  height: 6,
+                  backgroundColor: '#e5e7eb',
+                  borderRadius: 3,
+                  overflow: 'hidden',
+                }}
+              >
+                <div
+                  style={{
+                    height: '100%',
+                    width: `${progress.progress}%`,
+                    background: 'linear-gradient(90deg, #3b82f6, #8b5cf6)',
+                    borderRadius: 3,
+                    transition: 'width 0.3s ease-out',
+                  }}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 12, marginTop: 8, fontSize: 11, color: '#9ca3af' }}>
+                {['parsing', 'static', 'sandbox', 'llm', 'scoring', 'done'].map((stage, i) => {
+                  const stages = ['parsing', 'static', 'sandbox', 'llm', 'scoring', 'done']
+                  const currentIdx = stages.indexOf(progress.stage)
+                  const stageIdx = stages.indexOf(stage)
+                  const isDone = stageIdx <= currentIdx
+                  const isCurrent = stageIdx === currentIdx
+                  return (
+                    <div
+                      key={stage}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        color: isCurrent ? '#3b82f6' : isDone ? '#16a34a' : '#d1d5db',
+                        fontWeight: isCurrent ? 600 : 400,
+                      }}
+                    >
+                      <span>{isDone ? '✓' : isCurrent ? '●' : '○'}</span>
+                      <span>
+                        {stage === 'parsing' && '解析'}
+                        {stage === 'static' && '静态分析'}
+                        {stage === 'sandbox' && '沙箱执行'}
+                        {stage === 'llm' && 'AI分析'}
+                        {stage === 'scoring' && '评分'}
+                        {stage === 'done' && '完成'}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+            <button
+              onClick={cancelAudit}
+              style={{
+                padding: '8px 16px',
+                backgroundColor: '#fef2f2',
+                color: '#dc2626',
+                border: '1px solid #fecaca',
+                borderRadius: 6,
+                fontSize: 13,
+                cursor: 'pointer',
+                fontWeight: 500,
+              }}
+            >
+              ✕ 取消审计
+            </button>
+          </div>
+        </div>
+      )}
 
       <div style={{ padding: 24, maxWidth: 1400, margin: '0 auto' }}>
         {/* 输入区域 */}
@@ -110,6 +299,8 @@ const AuditDashboard: React.FC = () => {
             border: '1px solid #e5e7eb',
             padding: 20,
             marginBottom: 20,
+            opacity: isAuditing ? 0.6 : 1,
+            pointerEvents: isAuditing ? 'none' : 'auto',
           }}
         >
           <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
@@ -150,25 +341,25 @@ const AuditDashboard: React.FC = () => {
             <div style={{ display: 'flex', alignItems: 'flex-end' }}>
               <button
                 onClick={handleAudit}
-                disabled={loading}
+                disabled={isAuditing}
                 style={{
                   padding: '10px 24px',
-                  backgroundColor: loading ? '#9ca3af' : '#3b82f6',
+                  backgroundColor: isAuditing ? '#9ca3af' : '#3b82f6',
                   color: 'white',
                   border: 'none',
                   borderRadius: 6,
                   fontSize: 14,
                   fontWeight: 500,
-                  cursor: loading ? 'not-allowed' : 'pointer',
+                  cursor: isAuditing ? 'not-allowed' : 'pointer',
                   display: 'flex',
                   alignItems: 'center',
                   gap: 8,
                 }}
               >
-                {loading ? (
+                {isAuditing ? (
                   <>
                     <span className="spinner">⏳</span>
-                    审计中...
+                    审计中 ({progress.progress}%)
                   </>
                 ) : (
                   <>🔍 开始审计</>
@@ -179,7 +370,7 @@ const AuditDashboard: React.FC = () => {
 
           <div>
             <label style={{ display: 'block', fontSize: 13, color: '#374151', marginBottom: 6 }}>
-              组件代码
+              组件代码（最长 500,000 字符）
             </label>
             <textarea
               value={code}
@@ -198,18 +389,62 @@ const AuditDashboard: React.FC = () => {
             />
           </div>
 
-          {error && (
+          {isErrorState && error && (
             <div
               style={{
                 marginTop: 12,
-                padding: '10px 14px',
-                backgroundColor: '#fef2f2',
-                color: '#dc2626',
+                padding: '12px 16px',
+                backgroundColor:
+                  progress.stage === 'timeout' ? '#fefce8' : '#fef2f2',
+                color: progress.stage === 'timeout' ? '#92400e' : '#dc2626',
                 borderRadius: 6,
                 fontSize: 13,
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 10,
               }}
             >
-              ❌ {error}
+              <span style={{ fontSize: 18 }}>
+                {progress.stage === 'timeout' ? '⏰' : '❌'}
+              </span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                  {progress.stage === 'timeout' && '审计超时'}
+                  {progress.stage === 'error' && '审计失败'}
+                  {progress.stage === 'cancelled' && '审计已取消'}
+                </div>
+                <div>{error}</div>
+                <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+                  <button
+                    onClick={handleAudit}
+                    style={{
+                      padding: '6px 12px',
+                      backgroundColor: '#3b82f6',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: 4,
+                      fontSize: 12,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    🔄 重新审计
+                  </button>
+                  <button
+                    onClick={handleReset}
+                    style={{
+                      padding: '6px 12px',
+                      backgroundColor: 'white',
+                      color: '#6b7280',
+                      border: '1px solid #d1d5db',
+                      borderRadius: 4,
+                      fontSize: 12,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    重置
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>
@@ -334,7 +569,7 @@ const AuditDashboard: React.FC = () => {
                       <div style={{ fontSize: 13, color: '#1e40af', fontWeight: 500, marginBottom: 4 }}>
                         整体评估
                       </div>
-                      <p style={{ margin: 0, fontSize: 13, color: '#1e3a8a' }}>
+                      <p style={{ margin: 0, fontSize: 13, color: '#1e3a8a', whiteSpace: 'pre-wrap' }}>
                         {report.llmAnalysis.overallAssessment || '暂无评估'}
                       </p>
                     </div>
@@ -409,7 +644,7 @@ const AuditDashboard: React.FC = () => {
         )}
 
         {/* 初始状态提示 */}
-        {!report && !loading && (
+        {!report && !isAuditing && !isErrorState && (
           <div
             style={{
               textAlign: 'center',
@@ -425,6 +660,9 @@ const AuditDashboard: React.FC = () => {
             </h3>
             <p style={{ margin: 0, color: '#6b7280', fontSize: 14 }}>
               输入组件代码，点击"开始审计"按钮，AI 将为您进行全面的安全分析
+            </p>
+            <p style={{ margin: '12px 0 0 0', color: '#9ca3af', fontSize: 12 }}>
+              系统已升级异常边界防护：多级降级、超时熔断、进度可追踪
             </p>
           </div>
         )}

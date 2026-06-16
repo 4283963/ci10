@@ -2,7 +2,6 @@ package com.audit.gateway.config;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.boot.web.client.RestTemplateBuilder;
 import java.time.Duration;
@@ -21,6 +20,14 @@ public class RestTemplateConfig {
         return builder
                 .setConnectTimeout(Duration.ofMillis(auditBrainProperties.getConnectTimeout()))
                 .setReadTimeout(Duration.ofMillis(auditBrainProperties.getTimeout()))
+                .build();
+    }
+
+    @Bean("healthCheckRestTemplate")
+    public RestTemplate healthCheckRestTemplate(RestTemplateBuilder builder) {
+        return builder
+                .setConnectTimeout(Duration.ofMillis(2000))
+                .setReadTimeout(Duration.ofMillis(3000))
                 .build();
     }
 }

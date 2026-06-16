@@ -197,16 +197,47 @@ def calculate_complexity(code: str) -> float:
     return round(min(complexity_score, 10.0), 2)
 
 
+MAX_CODE_LENGTH = 500000
+MAX_FINDINGS_PER_PATTERN = 20
+MAX_TOTAL_FINDINGS = 100
+
+
 def analyze_static(code: str) -> StaticAnalysisResult:
     findings: List[AnomalyFinding] = []
     
+    if len(code) > MAX_CODE_LENGTH:
+        code = code[:MAX_CODE_LENGTH]
+        findings.append(
+            AnomalyFinding(
+                finding_id=f"static-limit-{uuid.uuid4().hex[:8]}",
+                anomaly_type=AnomalyType.UNKNOWN,
+                risk_level=RiskLevel.MEDIUM,
+                description=f"代码过长（超过 {MAX_CODE_LENGTH} 字符），已截断进行静态分析，结果可能不完整",
+                code_snippet=f"// 代码已截断，原始长度: {len(code)} 字符",
+                line_number=1,
+                confidence=0.9,
+                remediation="建议拆分过大的组件，减小单文件代码量",
+                evidence=[f"原始长度: {len(code)} 字符"],
+            )
+        )
+    
     syntax_valid, syntax_error = analyze_syntax(code)
     
+    total_findings = 0
     for pattern_info in DANGEROUS_PATTERNS:
+        if total_findings >= MAX_TOTAL_FINDINGS:
+            break
+            
         pattern = pattern_info["pattern"]
         matches = list(re.finditer(pattern, code, re.IGNORECASE))
         
+        if len(matches) > MAX_FINDINGS_PER_PATTERN:
+            matches = matches[:MAX_FINDINGS_PER_PATTERN]
+        
         for match in matches:
+            if total_findings >= MAX_TOTAL_FINDINGS:
+                break
+                
             line_num = _find_line_number(code, match.start())
             snippet = _extract_snippet(code, match.start(), match.end())
             
@@ -222,9 +253,14 @@ def analyze_static(code: str) -> StaticAnalysisResult:
                 evidence=[match.group()],
             )
             findings.append(finding)
+            total_findings += 1
     
     code_lines = len([l for l in code.split("\n") if l.strip()])
-    complexity_score = calculate_complexity(code)
+    
+    if code_lines > 2000:
+        complexity_score = 10.0
+    else:
+        complexity_score = calculate_complexity(code)
     
     return StaticAnalysisResult(
         syntax_valid=syntax_valid,
